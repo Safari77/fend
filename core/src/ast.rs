@@ -108,27 +108,27 @@ impl fmt::Display for Bop {
 pub(crate) enum Expr {
 	Literal(Value),
 	Ident(Ident),
-	Parens(Box<Self>),
-	UnaryMinus(Box<Self>),
-	UnaryPlus(Box<Self>),
-	UnaryDiv(Box<Self>),
-	Factorial(Box<Self>),
-	Bop(Bop, Box<Self>, Box<Self>),
+	Parens(Box<Expr>),
+	UnaryMinus(Box<Expr>),
+	UnaryPlus(Box<Expr>),
+	UnaryDiv(Box<Expr>),
+	Factorial(Box<Expr>),
+	Bop(Bop, Box<Expr>, Box<Expr>),
 	// Call a function or multiply the expressions
-	Apply(Box<Self>, Box<Self>),
+	Apply(Box<Expr>, Box<Expr>),
 	// Call a function, or throw an error if lhs is not a function
-	ApplyFunctionCall(Box<Self>, Box<Self>),
+	ApplyFunctionCall(Box<Expr>, Box<Expr>),
 	// Multiply the expressions
-	ApplyMul(Box<Self>, Box<Self>),
+	ApplyMul(Box<Expr>, Box<Expr>),
 
-	As(Box<Self>, Box<Self>),
-	Fn(Ident, Box<Self>),
+	As(Box<Expr>, Box<Expr>),
+	Fn(Ident, Box<Expr>),
 
-	Of(Ident, Box<Self>),
+	Of(Ident, Box<Expr>),
 
-	Assign(Ident, Box<Self>),
-	Equality(bool, Box<Self>, Box<Self>),
-	Statements(Box<Self>, Box<Self>),
+	Assign(Ident, Box<Expr>),
+	Equality(bool, Box<Expr>, Box<Expr>),
+	Statements(Box<Expr>, Box<Expr>),
 }
 
 impl Expr {
