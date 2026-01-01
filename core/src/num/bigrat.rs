@@ -224,31 +224,6 @@ impl BigRat {
 		}
 	}
 
-	#[allow(
-		clippy::cast_possible_truncation,
-		clippy::cast_sign_loss,
-		clippy::cast_precision_loss
-	)]
-	pub(crate) fn from_f64<I: Interrupt>(mut f: f64, int: &I) -> FResult<Self> {
-		let negative = f < 0.0;
-		if negative {
-			f = -f;
-		}
-		let i = (f * u64::MAX as f64) as u128;
-		let part1 = i as u64;
-		let part2 = (i >> 64) as u64;
-		Ok(Self {
-			sign: if negative {
-				Sign::Negative
-			} else {
-				Sign::Positive
-			},
-			num: BigUint::from(part1)
-				.add(&BigUint::from(part2).mul(&BigUint::from(u64::MAX), int)?),
-			den: BigUint::from(u64::MAX),
-		})
-	}
-
 	fn high_precision_ln_2() -> Self {
 		static LN_2: OnceLock<BigRat> = OnceLock::new();
 		LN_2.get_or_init(|| {
@@ -390,20 +365,29 @@ impl BigRat {
 		}
 
 		// Range reduction: Reduce x until x < 0.5
-		// e^x = (e^(x/2^k))^(2^k)
 		let mut k = 0;
-		let half = one.clone().div(&Self::from(2), int)?;
+		// 1/2
+		let half = Self {
+			sign: Sign::Positive,
+			num: 1.into(),
+			den: 2.into(),
+		};
 
 		while x > half {
-			x = x.div(&Self::from(2), int)?;
+			x.den = x.den.mul(&2.into(), int)?;
 			k += 1;
 		}
 
 		let mut result = Self::exp_series(&x, int)?;
+		let scale = Self::fixed_point_scale();
 
 		// Square result k times
 		for _ in 0..k {
-			result = result.clone().mul(&result, int)?;
+			// Perform fixed-point squaring (N^2 / scale) instead of rational squaring.
+			// This keeps the integer sizes constant (~200 digits) instead of exploding to 400k digits.
+			let num_sq = result.num.clone().mul(&result.num, int)?;
+			result.num = num_sq.div(scale, int)?;
+			// result.den is already 'scale', so we don't need to change it.
 		}
 
 		if invert {
@@ -1001,19 +985,89 @@ impl BigRat {
 		Ok(self.apply_uint_op(BigUint::factorial, int)?.into())
 	}
 
-	pub(crate) fn floor<I: Interrupt>(self, int: &I) -> FResult<Self> {
-		let float = self.into_f64(int)?.floor();
-		Self::from_f64(float, int)
+	pub(crate) fn floor<I: Interrupt>(mut self, int: &I) -> FResult<Self> {
+		if self.is_definitely_zero() {
+			return Ok(self);
+		}
+		self = self.simplify(int)?;
+
+		// Use integer division.
+		// divmod takes &self.den, so we don't move anything.
+		let (q, rem) = self.num.divmod(&self.den, int)?;
+
+		if self.sign == Sign::Positive {
+			// Example: 10/3 = 3 rem 1 -> floor is 3
+			Ok(Self {
+				sign: Sign::Positive,
+				num: q,
+				den: 1.into(),
+			})
+		} else {
+			// Example: -10/3 = -3 rem 1 -> floor is -4
+			// Example: -9/3 = -3 rem 0 -> floor is -3
+			let ans = if rem.is_definitely_zero() {
+				q
+			} else {
+				q.add(&1.into())
+			};
+			Ok(Self {
+				sign: Sign::Negative,
+				num: ans,
+				den: 1.into(),
+			})
+		}
 	}
 
-	pub(crate) fn ceil<I: Interrupt>(self, int: &I) -> FResult<Self> {
-		let float = self.into_f64(int)?.ceil();
-		Self::from_f64(float, int)
+	pub(crate) fn ceil<I: Interrupt>(mut self, int: &I) -> FResult<Self> {
+		if self.is_definitely_zero() {
+			return Ok(self);
+		}
+		self = self.simplify(int)?;
+
+		let (q, rem) = self.num.divmod(&self.den, int)?;
+
+		if self.sign == Sign::Positive {
+			// Example: 10/3 = 3 rem 1 -> ceil is 4
+			let ans = if rem.is_definitely_zero() {
+				q
+			} else {
+				q.add(&1.into())
+			};
+			Ok(Self {
+				sign: Sign::Positive,
+				num: ans,
+				den: 1.into(),
+			})
+		} else {
+			// Example: -10/3 = -3 rem 1 -> ceil is -3
+			Ok(Self {
+				sign: Sign::Negative,
+				num: q,
+				den: 1.into(),
+			})
+		}
 	}
 
-	pub(crate) fn round<I: Interrupt>(self, int: &I) -> FResult<Self> {
-		let float = self.into_f64(int)?.round();
-		Self::from_f64(float, int)
+	pub(crate) fn round<I: Interrupt>(mut self, int: &I) -> FResult<Self> {
+		if self.is_definitely_zero() {
+			return Ok(self);
+		}
+		self = self.simplify(int)?;
+
+		let (q, rem) = self.num.divmod(&self.den, int)?;
+
+		// Rounding logic: Round up if remainder >= denominator / 2
+		// Equivalent to: 2 * remainder >= denominator
+		let rem_2 = rem.mul(&2.into(), int)?;
+		let round_up = rem_2 >= self.den;
+
+		let ans = if round_up { q.add(&1.into()) } else { q };
+
+		Ok(Self {
+			sign: self.sign,
+			num: ans,
+			den: 1.into(),
+		})
 	}
 
 	pub(crate) fn bitwise<I: Interrupt>(
@@ -1584,11 +1638,11 @@ impl BigRat {
 	pub(crate) fn pow<I: Interrupt>(mut self, mut rhs: Self, int: &I) -> FResult<Exact<Self>> {
 		self = self.simplify(int)?;
 		rhs = rhs.simplify(int)?;
+
 		if self.num != 0.into() && self.sign == Sign::Negative && rhs.den != 1.into() {
 			return Err(FendError::RootsOfNegativeNumbers);
 		}
 		if rhs.sign == Sign::Negative {
-			// a^-b => 1/a^b
 			rhs.sign = Sign::Positive;
 			let inverse_res = self.pow(rhs, int)?;
 			return Ok(Exact::new(
@@ -1596,16 +1650,51 @@ impl BigRat {
 				inverse_res.exact,
 			));
 		}
+
+		// Use exp/ln approximation if:
+		// 1. The denominator is large (e.g. ^0.0001), indicating a complex decimal root.
+		// 2. The numerator is large AND it's a root (e.g. ^210.1 = ^2101/10).
+		let large_root = rhs.den > BigUint::from(1000u64);
+		let large_power = rhs.den > BigUint::from(1u64) && rhs.num > BigUint::from(100u64);
+
+		if large_root || large_power {
+			// Case 1: Simple fractional root (e.g. ^0.00001) where we might want exactness
+			if rhs.num == 1.into() && !large_power {
+				let n = rhs.den.clone();
+				let num_root = self.num.clone().root_n(&n, int)?;
+				let den_root = self.den.clone().root_n(&n, int)?;
+
+				if num_root.exact && den_root.exact {
+					return Ok(Exact::new(
+						Self {
+							sign: Sign::Positive,
+							num: num_root.value,
+							den: den_root.value,
+						},
+						true,
+					));
+				}
+			}
+
+			// Case 2: Complex decimal or large hybrid power -> Fast Approximation
+			let ln_x = self.ln(int)?;
+			let y_ln_x = ln_x.value.mul(&rhs, int)?;
+			return Ok(y_ln_x.exp(int)?);
+		}
+
+		// Standard Path (Small denominators & Small numerators, e.g. ^0.5, ^2/3)
 		let result_sign = if self.sign == Sign::Positive || rhs.num.is_even(int)? {
 			Sign::Positive
 		} else {
 			Sign::Negative
 		};
+
 		let pow_res = Self {
 			sign: result_sign,
 			num: BigUint::pow(&self.num, &rhs.num, int)?,
 			den: BigUint::pow(&self.den, &rhs.num, int)?,
 		};
+
 		if rhs.den == 1.into() {
 			Ok(Exact::new(pow_res, true))
 		} else {

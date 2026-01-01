@@ -1219,6 +1219,11 @@ fn powers_18() {
 }
 
 #[test]
+fn power_exponent_2_914() {
+	test_eval("711.49^2.914", "approx. 204748101.9700616257")
+}
+
+#[test]
 fn pi_to_the_power_of_ten() {
 	test_eval("pi^10", "approx. 93648.047476083");
 }
