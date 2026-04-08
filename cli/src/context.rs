@@ -80,9 +80,9 @@ impl<'a> Context<'a> {
 		use rand::SeedableRng;
 
 		let mut ctx_borrow = self.ctx.write().await;
-		ctx_borrow
-			.core_ctx
-			.set_random_u32_trait(Random(rand::rngs::StdRng::from_os_rng()));
+		ctx_borrow.core_ctx.set_random_u32_trait(Random(
+			rand::rngs::StdRng::try_from_rng(&mut rand::rng()).unwrap(),
+		));
 		ctx_borrow.core_ctx.set_output_mode_terminal();
 		ctx_borrow.core_ctx.set_echo_result(echo_result);
 		ctx_borrow.input_typed = false;
@@ -120,7 +120,7 @@ struct Random(rand::rngs::StdRng);
 
 impl fend_core::random::RandomSource for Random {
 	fn get_random_u32(&mut self) -> u32 {
-		use rand::Rng;
+		use rand::RngExt;
 		self.0.random()
 	}
 }
